@@ -19,36 +19,34 @@ module sequence_check
     import messages_pkg::*;
     import pipeline_pkg::*;
 (
-    input  logic               clk,                 // clock: registers update on its rising edge
-    input  logic               rst,                 // synchronous reset: clears valid, restarts the count at 1
+    input  logic               clk,
+    input  logic               rst,
 
-    /* verilator lint_off UNUSEDSIGNAL */           // kept from the stub, which read neither input
-    input  logic               market_event_valid,  // high: market_event holds a real event this cycle
-    input  market_data_event_t market_event,        // the decoded message, from the parser
+    /* verilator lint_off UNUSEDSIGNAL */  // from the stub; harmless now both are used
+    input  logic               market_event_valid,  // a decoded event is on market_event
+    input  market_data_event_t market_event,        // from the parser
     /* verilator lint_on UNUSEDSIGNAL */
 
-    output logic               item_valid,          // high: item holds a real pipeline item
+    output logic               item_valid,          // item is real this cycle
     output pipeline_item_t     item                 // the event wrapped for the pipeline, gap flag set
 );
 
-    // Combinational results, loaded into the output registers on the next edge.
+    // Computed this cycle, registered on the next edge.
     logic           item_valid_next;
     pipeline_item_t item_next;
 
-    // Sequence state, kept between messages (each with its _next value).
+    // Sequence state, kept between messages.
     logic [63:0]    expected_sequence, expected_sequence_next;  // the number the next message should carry
     logic           gap_seen, gap_seen_next;                    // a gap was found on an earlier message
 
     always_comb begin
         logic gap;  // a gap at or before this message (a temporary, not a register)
 
-        // Gap check: a real message (not junk on an idle cycle) with an
-        // unexpected number opens a gap; once seen, it stays (sticky).
+        // Gap check: only real messages are checked (idle cycles carry junk); sticky once seen.
         gap = gap_seen
            || (market_event_valid && market_event.sequence_number != expected_sequence);
 
-        // State update. Defaults hold the state, so idle cycles change nothing.
-        // After a message, expect its number plus one (resyncing after a gap).
+        // State update: idle cycles hold it; after a message, expect its number + 1 (resyncs after a gap).
         expected_sequence_next = expected_sequence;
         gap_seen_next          = gap_seen;
         if (market_event_valid) begin
@@ -56,16 +54,15 @@ module sequence_check
             gap_seen_next          = gap;
         end
 
-        // Output: every event passes through unchanged, wrapped in a pipeline
-        // item with only the gap flag set (later stages add their own errors).
+        // Output: the event passes through unchanged, wrapped with the gap flag.
         item_valid_next               = market_event_valid;
         item_next                     = '0;
-        item_next.source              = SOURCE_MARKET_DATA;  // market data, not a report
+        item_next.source              = SOURCE_MARKET_DATA;  // not a report
         item_next.market_event        = market_event;
         item_next.errors.sequence_gap = gap;
     end
 
-    // Registers: the output item (one cycle after the event) and the state.
+    // Registers: output (one cycle of latency) and sequence state.
     always_ff @(posedge clk) begin
         if (rst) begin
             item_valid        <= 1'b0;

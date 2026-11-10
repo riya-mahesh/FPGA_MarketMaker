@@ -1,18 +1,9 @@
-// Drives pricing_equiv.sv with random top-of-book inputs and counts any
-// difference between a pricing version and the original.
-//
-//   equiv <credit-mode> [cycles]
-//
-// credit-mode:
-//   every-cycle    the credit changes every cycle (versions that sample it
-//                  with the item, as the original does, must still match)
-//   between-items  the credit changes only after three idle cycles, when the
-//                  pipeline is empty -- as in the real system, where the CPU
-//                  writes it between messages
-//
-// The inputs deliberately include crossed and locked books, spreads too wide
-// to quote, off-grid prices, zero and huge sizes, and huge credits.
-// Exit status: 0 if no differences, 1 otherwise.
+// Random-input comparison of a pricing version against the original.
+//   equiv every-cycle|between-items [cycles]
+// every-cycle: credit changes each cycle. between-items: only while the
+// pipeline is empty, as in the real system. Inputs include crossed books,
+// too-wide spreads, off-grid prices, zero/huge sizes and huge credits.
+// Exits 0 if no differences.
 
 #include <cstdint>
 #include <cstdio>
@@ -61,9 +52,9 @@ int main(int argc, char** argv) {
             d.in_valid = r(10) != 0;
             d.credit = random_credit();
         } else {
-            const bool gap = (c % 12) >= 9;  // every 12 cycles: 3 idle cycles...
+            const bool gap = (c % 12) >= 9;  // 3 idle cycles in every 12
             d.in_valid = !gap && r(10) != 0;
-            if (c % 12 == 11) d.credit = random_credit();  // ...then a new credit
+            if (c % 12 == 11) d.credit = random_credit();
         }
         const std::uint32_t bid = static_cast<std::uint32_t>(100 * r(3000));
         const std::int64_t spread_ticks = static_cast<std::int64_t>(r(22)) - 2;  // crossed .. too wide

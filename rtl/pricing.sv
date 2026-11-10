@@ -1,10 +1,8 @@
-// PRICING VERSION 3 -- PRECOMPUTED CANDIDATES (write-up "V3"; the version in use).
-// Change from version 2: the arithmetic after the pick (B + k * tick, the
-// credit, the positivity check) moves into stage 1, done for every possible k
-// in parallel, so stage 2 only compares, picks k (one-hot) and selects.
-// Measured (make timing): pricing alone 40.08 MHz; whole design 41.52 MHz.
-// Earlier versions: rtl/pricing_versions/. A copy of this file is kept there
-// as pricing_v3_precompute.sv (tests/pricing_versions/ checks they match).
+// Pricing V3 (the version in use). Change from V2: the arithmetic after the
+// pick (B + k * tick, the credit, the "bid > 0" check) moves to stage 1, done
+// for every possible k in parallel, so stage 2 only compares, picks and selects.
+// Measured: pricing alone 40.08 MHz, whole design 41.52 MHz.
+// Earlier versions (V0-V2) and a copy of this file: rtl/pricing_versions/.
 //
 // This file was generated with the help of Claude Code.
 //
@@ -34,25 +32,14 @@
 // aren't quoted. can_quote is false then, when the book is invalid, or when
 // the bid would not be positive; the prices are zero whenever it is false.
 //
-// Pipelining. Done in one cycle, this chains a subtract, the spread
-// comparisons, a multiply, the k comparisons, a priority pick, another
-// multiply (k * tick), and the credit arithmetic: by far the longest path in
-// the design. So it is split into two stages, cut where S * bid size becomes
-// known, and stage 1 also does in advance everything that doesn't depend on
-// it:
+// Two pipeline stages, split once S * bid size is known:
+//   Stage 1: S and S * bid size; alongside them (they need only the sizes,
+//            B and the credit), k * total size and, for every k, the bid, ask
+//            and "bid > 0" that k would give.
+//   Stage 2: compare every k at once, pick the largest that fits (one-hot,
+//            not a priority chain), and select its precomputed prices.
 //
-//   Stage 1: S and S * bid size; and, alongside them (they need only the
-//            sizes, prices, and credit), every candidate k * total size and,
-//            for every possible k, the bid, ask, and "bid is positive" that
-//            k would give.
-//   Stage 2: the k comparisons, all at once. The candidates that hold form a
-//            prefix (k * total size grows with k), so the largest is the one
-//            whose successor fails: found for every k at once (one-hot), not
-//            by a chain. It then selects the precomputed prices.
-//
-// Timing: two registered stages with no state of their own. item_valid is
-// high exactly two cycles after in_item_valid. A new item may arrive every
-// cycle.
+// Timing: item_valid is high exactly two cycles after in_item_valid.
 module pricing
     import config_pkg::*;
     import messages_pkg::*;
@@ -71,11 +58,10 @@ module pricing
     output quote_item_t   item
 );
 
-    localparam int K_COUNT = MAX_SPREAD_TICKS;  // candidates for k: 0 .. MAX_SPREAD_TICKS-1
+    localparam int K_COUNT = MAX_SPREAD_TICKS;  // candidates for k: 0 .. K_COUNT-1
 
     // ---------------------------------------------------------------------
-    // Stage 1: S * bid size, and everything stage 2 will choose between.
-    // Its results wait in these registers (mid_*) for stage 2.
+    // Stage 1: results wait in these mid_* registers for stage 2.
     // ---------------------------------------------------------------------
     logic               mid_valid, mid_valid_next;                  // stage 1 holds an item
     logic               mid_spread_ok, mid_spread_ok_next;          // 1 <= S <= MAX_SPREAD_TICKS
@@ -85,10 +71,10 @@ module pricing
     logic [36:0]        mid_multiple_next [1:K_COUNT-1];
     logic [31:0]        mid_bid [K_COUNT];                          // bid if fair value's tick is B + k ticks
     logic [31:0]        mid_bid_next [K_COUNT];
-    logic [31:0]        mid_ask [K_COUNT+1];                        // ask if the tick above is B + k ticks
+    logic [31:0]        mid_ask [K_COUNT+1];                        // ask if the tick above is B + k ticks (k up to 16)
     logic [31:0]        mid_ask_next [K_COUNT+1];
     logic [K_COUNT-1:0] mid_positive, mid_positive_next;            // bit k: that bid would be positive
-    item_source_e       mid_source, mid_source_next;                // passed through unchanged
+    item_source_e       mid_source, mid_source_next;                // passed through
     report_event_t      mid_report_event, mid_report_event_next;
     error_flags_t       mid_errors, mid_errors_next;
 
@@ -102,15 +88,14 @@ module pricing
         spread     = top.ask_price - top.bid_price;
         total_size = {1'b0, top.bid_size} + {1'b0, top.ask_size};
 
-        // The spread in ticks, by comparison with each multiple of the tick.
+        // S: the spread in ticks, by comparison with each multiple of a tick (no divide).
         spread_ticks = 0;
         for (int j = 1; j <= MAX_SPREAD_TICKS; ++j) begin
             if (spread >= j * TICK_SIZE) spread_ticks = j;
         end
 
-        // In parallel with the spread: each candidate k * total size, and the
-        // prices each k would give (k * tick is a constant per k, so no
-        // multiplier is needed).
+        // Alongside S, not after it: the candidates and the prices each k would give.
+        // k * tick is a constant per k, so these need adders, not multipliers.
         for (int j = 1; j < K_COUNT; ++j) begin
             mid_multiple_next[j] = 37'(j) * {4'd0, total_size};
         end
@@ -151,21 +136,21 @@ module pricing
     end
 
     // ---------------------------------------------------------------------
-    // Stage 2: find k, and select the prices stage 1 prepared for it.
+    // Stage 2: find k and select the prices stage 1 prepared for it.
     // ---------------------------------------------------------------------
     logic        item_valid_next;
     quote_item_t item_next;
 
     always_comb begin
         logic [K_COUNT:0]   fits;     // bit k: k < S and k * total size <= S * bid size
-        logic [K_COUNT-1:0] exact;    // bit k: k * total size == S * bid size (on a tick)
+        logic [K_COUNT-1:0] exact;    // bit k: equality, so fair value is exactly on a tick
         logic [K_COUNT-1:0] chosen;   // bit k: k is the largest that fits (one-hot)
         logic [31:0]        bid;
         logic [31:0]        ask;
         logic               positive;
         logic               can_quote;
 
-        // Every comparison at once. k = 0 always fits.
+        // Every comparison at once; k = 0 always fits.
         fits[0]  = 1'b1;
         exact[0] = mid_weighted == '0;
         for (int j = 1; j < K_COUNT; ++j) begin
@@ -174,14 +159,14 @@ module pricing
         end
         fits[K_COUNT] = 1'b0;
 
-        // The fits form a prefix (1...10...0), so the largest k that fits is
-        // the one whose successor doesn't.
+        // k * total size grows with k, so fits is 1...10...0: the largest k that
+        // fits is the one whose successor doesn't. One AND gate per k.
         for (int j = 0; j < K_COUNT; ++j) begin
             chosen[j] = fits[j] && !fits[j + 1];
         end
 
-        // Select k's precomputed prices: OR together the one chosen entry.
-        // On a tick, the tick above is k's own; otherwise it is k + 1's.
+        // Select the chosen entry (an AND-OR). On a tick, the tick above is k's
+        // own; otherwise it is k + 1's.
         bid      = '0;
         ask      = '0;
         positive = 1'b0;

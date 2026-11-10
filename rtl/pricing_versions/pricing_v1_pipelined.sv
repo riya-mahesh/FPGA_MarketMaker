@@ -1,14 +1,10 @@
-// PRICING VERSION 1 -- PIPELINED (write-up "V1").
-// Change from version 0: a register after S * bid size splits pricing into two
-// stages. The products k * total size and the k < S mask need only the sizes
-// and S, so they move into stage 1, computed alongside the spread. Stage 2
-// still picks k with a priority chain, then computes B + k * tick and applies
-// the credit.
-// Measured (make timing): pricing alone 35.51 MHz; whole design 29.00 MHz.
-// Note: stage 2 reads the credit input directly, a cycle after the item
-// entered. This matches version 0 as long as the credit doesn't change while
-// an item is in flight, which holds here: the CPU writes it only between
-// messages, when the pipeline is empty.
+// Pricing V1. Change from V0: a register after S * bid size splits pricing
+// into two stages; k * total size and the k < S mask move to stage 1,
+// alongside the spread. Stage 2 still picks k with a priority chain, then
+// computes B + k * tick and applies the credit.
+// Measured: pricing alone 35.51 MHz, whole design 29.00 MHz.
+// Stage 2 reads the credit a cycle after the item entered; this matches V0
+// because the CPU writes the credit only between messages.
 //
 // This file was generated with the help of Claude Code.
 //
@@ -60,17 +56,16 @@ module pricing
 );
 
     // ---------------------------------------------------------------------
-    // Stage 1: everything that doesn't need S * bid size, plus S * bid size
-    // itself. Its results wait in these registers for stage 2.
+    // Stage 1: results wait in these mid_* registers for stage 2.
     // ---------------------------------------------------------------------
     logic                    mid_valid, mid_valid_next;                // stage 1 holds an item
     logic [31:0]             mid_bid_price, mid_bid_price_next;        // B, for the ticks
     logic                    mid_spread_ok, mid_spread_ok_next;        // 1 <= S <= MAX_SPREAD_TICKS
     logic [MAX_SPREAD_TICKS-1:0] mid_k_allowed, mid_k_allowed_next;    // bit k: k < S
     logic [36:0]             mid_weighted, mid_weighted_next;          // S * bid size
-    logic [36:0]             mid_multiple [1:MAX_SPREAD_TICKS-1];      // k * total size, per candidate k
+    logic [36:0]             mid_multiple [1:MAX_SPREAD_TICKS-1];      // k * total size
     logic [36:0]             mid_multiple_next [1:MAX_SPREAD_TICKS-1];
-    item_source_e            mid_source, mid_source_next;              // passed through unchanged
+    item_source_e            mid_source, mid_source_next;              // passed through
     report_event_t           mid_report_event, mid_report_event_next;
     error_flags_t            mid_errors, mid_errors_next;
 
@@ -90,12 +85,11 @@ module pricing
             if (spread >= j * TICK_SIZE) spread_ticks = j;
         end
 
-        // Every candidate k * total size, alongside the spread (not after it).
+        // Every candidate k * total size, alongside S (it needs only the sizes).
         for (int j = 1; j < MAX_SPREAD_TICKS; ++j) begin
             mid_multiple_next[j] = 37'(j) * {4'd0, total_size};
         end
 
-        // Which candidates are below S (k must be less than S).
         for (int j = 0; j < MAX_SPREAD_TICKS; ++j) begin
             mid_k_allowed_next[j] = j < spread_ticks;
         end

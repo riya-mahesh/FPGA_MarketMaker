@@ -1,12 +1,9 @@
-// PRICING VERSION 2 -- ONE-HOT SELECTION (write-up "V2").
-// Change from version 1: the priority chain that picks k is replaced by a
-// one-hot pick. k * total size grows with k and k < S holds for a prefix of k,
-// so the passing candidates always form 1...1 0...0; the largest k is the one
-// with fits[k] = 1 and fits[k+1] = 0, found by one AND gate per k in parallel.
-// The credit is also captured in stage 1 and carried with the item
-// (mid_credit), so every item uses the credit current when it entered.
-// Measured (make timing): pricing alone 37.44 MHz; whole design 30.25 MHz.
-// (Measured before mid_credit was added: 32 flip-flops, off the critical path.)
+// Pricing V2. Change from V1: the priority chain that picks k is replaced by
+// a one-hot pick (fits is always 1...10...0, so the largest k is the one with
+// fits[k] = 1 and fits[k+1] = 0: one AND gate per k, in parallel). The credit
+// is also captured in stage 1 and carried with the item (mid_credit).
+// Measured: pricing alone 37.44 MHz, whole design 30.25 MHz (before mid_credit
+// was added; it is 32 flip-flops off the critical path).
 //
 // This file was generated with the help of Claude Code.
 //
@@ -58,17 +55,16 @@ module pricing
 );
 
     // ---------------------------------------------------------------------
-    // Stage 1: everything that doesn't need S * bid size, plus S * bid size
-    // itself. Its results wait in these registers for stage 2.
+    // Stage 1: results wait in these mid_* registers for stage 2.
     // ---------------------------------------------------------------------
     logic                    mid_valid, mid_valid_next;                // stage 1 holds an item
     logic [31:0]             mid_bid_price, mid_bid_price_next;        // B, for the ticks
     logic                    mid_spread_ok, mid_spread_ok_next;        // 1 <= S <= MAX_SPREAD_TICKS
     logic [MAX_SPREAD_TICKS-1:0] mid_k_allowed, mid_k_allowed_next;    // bit k: k < S
     logic [36:0]             mid_weighted, mid_weighted_next;          // S * bid size
-    logic [36:0]             mid_multiple [1:MAX_SPREAD_TICKS-1];      // k * total size, per candidate k
+    logic [36:0]             mid_multiple [1:MAX_SPREAD_TICKS-1];      // k * total size
     logic [36:0]             mid_multiple_next [1:MAX_SPREAD_TICKS-1];
-    item_source_e            mid_source, mid_source_next;              // passed through unchanged
+    item_source_e            mid_source, mid_source_next;              // passed through
     report_event_t           mid_report_event, mid_report_event_next;
     error_flags_t            mid_errors, mid_errors_next;
     logic [31:0]             mid_credit, mid_credit_next;              // the credit when the item entered
@@ -89,12 +85,11 @@ module pricing
             if (spread >= j * TICK_SIZE) spread_ticks = j;
         end
 
-        // Every candidate k * total size, alongside the spread (not after it).
+        // Every candidate k * total size, alongside S (it needs only the sizes).
         for (int j = 1; j < MAX_SPREAD_TICKS; ++j) begin
             mid_multiple_next[j] = 37'(j) * {4'd0, total_size};
         end
 
-        // Which candidates are below S (k must be less than S).
         for (int j = 0; j < MAX_SPREAD_TICKS; ++j) begin
             mid_k_allowed_next[j] = j < spread_ticks;
         end
@@ -106,7 +101,7 @@ module pricing
         mid_source_next       = in_item.source;
         mid_report_event_next = in_item.report_event;
         mid_errors_next       = in_item.errors;
-        mid_credit_next       = credit;  // sampled with the item, so it travels with it
+        mid_credit_next       = credit;
     end
 
     always_ff @(posedge clk) begin
@@ -140,8 +135,8 @@ module pricing
         logic [31:0]  tick_above;     // the tick at or above fair value
         logic         can_quote;
 
-        // The largest k with k * total size <= S * bid size (k < S), and
-        // whether that is an exact equality.
+        // k * total size grows with k, so fits is 1...10...0: the largest k that
+        // fits is the one whose successor doesn't. One AND gate per k.
         logic [MAX_SPREAD_TICKS:0]   fits;
         logic [MAX_SPREAD_TICKS-1:0] exact;
         logic [MAX_SPREAD_TICKS-1:0] chosen;

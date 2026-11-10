@@ -1,7 +1,6 @@
-// PRICING VERSION 0 -- ORIGINAL (as provided with the assignment).
-// The whole computation in one clock cycle. Kept for reference and as the
-// golden model for the equivalence test (tests/pricing_versions/).
-// Measured (make timing): pricing alone 18.88 MHz; whole design 18.10 MHz.
+// Pricing V0: the original, as provided. The whole computation in one cycle.
+// Measured: pricing alone 18.88 MHz, whole design 18.10 MHz.
+// Kept as the reference model for tests/pricing_versions/.
 //
 // This file was generated with the help of Claude Code.
 //

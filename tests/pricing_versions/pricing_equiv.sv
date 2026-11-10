@@ -1,14 +1,11 @@
-// Equivalence harness for the pricing versions (see run.sh).
-//
-// Runs the original pricing (pricing_ref, 1 cycle) and a candidate version
-// (pricing, LATENCY cycles) on the same inputs, delays the original's output
-// to line up with the candidate's, and flags any difference.
+// Runs the original (pricing_ref) and a version (pricing) side by side, delays
+// the original's output to match the version's latency, and flags differences.
 module pricing_equiv
     import config_pkg::*;
     import messages_pkg::*;
     import pipeline_pkg::*;
 #(
-    parameter int LATENCY = 2  // the candidate's latency, in cycles
+    parameter int LATENCY = 2  // the version's latency, in cycles
 ) (
     input  logic        clk,
     input  logic        rst,

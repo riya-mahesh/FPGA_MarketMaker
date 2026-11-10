@@ -9,33 +9,30 @@
 module order_encoder
     import messages_pkg::*;
 (
-    input  logic                    clk,            // clock: registers update on its rising edge
-    input  logic                    rst,            // synchronous reset: clears the valid flag
+    input  logic                    clk,
+    input  logic                    rst,
 
-    /* verilator lint_off UNUSEDSIGNAL */           // kept from the stub, which read none of these
-    input  logic                    request_valid,  // high: request holds an order to send this cycle
-    input  order_request_t          request,        // the order, from the quote manager
+    /* verilator lint_off UNUSEDSIGNAL */  // from the stub; harmless now every field is used
+    input  logic                    request_valid,  // an order to send is on request
+    input  order_request_t          request,        // from the quote manager
     /* verilator lint_on UNUSEDSIGNAL */
 
-    output logic                    order_valid,    // high: order_data holds a message to send
+    output logic                    order_valid,    // order_data is a message to send
     output logic [MESSAGE_BITS-1:0] order_data      // the encoded message, byte n in bits [8n+7:8n]
 );
 
-    // Combinational results, loaded into the output registers on the next edge.
+    // Computed this cycle, registered on the next edge.
     logic                    order_valid_next;
     logic [MESSAGE_BITS-1:0] order_data_next;
 
-    // Encode: write each field into order_data_next at its byte offset.
-    // A field n bytes long at byte o is order_data_next[8*o +: 8*n].
+    // Encode: a field n bytes long at byte o is order_data_next[8*o +: 8*n].
     always_comb begin
-        // Defaults: valid if a request arrived; every byte zero, so fields a
-        // message doesn't set and bytes past its end stay zero.
+        // Defaults: valid if a request arrived; unset fields and bytes past the end stay zero.
         order_valid_next = request_valid;
         order_data_next  = '0;
 
-        // Each kind's type byte and fields.
         case (request.kind)
-            ORDER_ENTER: begin  // new order (25 bytes); instrument and time in force are fixed
+            ORDER_ENTER: begin  // new order, 25 bytes; instrument and time in force are fixed
                 order_data_next[7:0]                                     = TYPE_ENTER;
                 order_data_next[8*ORDER_ENTER_TOKEN_OFFSET +: 64]        = request.token;
                 order_data_next[8*ORDER_ENTER_SIDE_OFFSET +: 8]          = request.is_buy ? SIDE_BUY : SIDE_SELL;
@@ -44,17 +41,17 @@ module order_encoder
                 order_data_next[8*ORDER_ENTER_PRICE_OFFSET +: 64]        = request.price;
                 order_data_next[8*ORDER_ENTER_TIME_IN_FORCE_OFFSET +: 8] = TIME_IN_FORCE_DAY;
             end
-            ORDER_REPLACE: begin  // replace a live order (29 bytes); it keeps its side
+            ORDER_REPLACE: begin  // replace a live order, 29 bytes (keeps its side)
                 order_data_next[7:0]                                            = TYPE_REPLACE;
                 order_data_next[8*ORDER_REPLACE_EXISTING_TOKEN_OFFSET +: 64]    = request.existing_token;  // the old order
                 order_data_next[8*ORDER_REPLACE_REPLACEMENT_TOKEN_OFFSET +: 64] = request.token;           // its replacement
                 order_data_next[8*ORDER_REPLACE_SHARES_OFFSET +: 32]            = request.shares;
                 order_data_next[8*ORDER_REPLACE_PRICE_OFFSET +: 64]             = request.price;
             end
-            ORDER_CANCEL: begin  // reduce an order (13 bytes)
+            ORDER_CANCEL: begin  // reduce an order, 13 bytes
                 order_data_next[7:0]                                = TYPE_CANCEL;
                 order_data_next[8*ORDER_CANCEL_TOKEN_OFFSET +: 64]  = request.token;
-                order_data_next[8*ORDER_CANCEL_SHARES_OFFSET +: 32] = request.shares;  // shares remaining: 0 cancels it all
+                order_data_next[8*ORDER_CANCEL_SHARES_OFFSET +: 32] = request.shares;  // shares remaining: 0 cancels
             end
             default: begin
                 order_valid_next = 1'b0;  // unknown kind: nothing to send
@@ -62,7 +59,7 @@ module order_encoder
         endcase
     end
 
-    // Output registers: the message appears one cycle after the request.
+    // Output register: one cycle of latency.
     always_ff @(posedge clk) begin
         if (rst) begin
             order_valid <= 1'b0;

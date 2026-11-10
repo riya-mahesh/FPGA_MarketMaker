@@ -71,18 +71,13 @@ module book
     // are bit masks (one bit per level), so each level's new value depends on
     // a couple of bits and its neighbors.
     //
-    // Every level is compared against the update at once, giving two masks:
-    //   match[i]: level i is at the update's price (at most one bit set).
-    //   worse[i]: level i is empty or worse than the update's price, so the
-    //             update's price belongs above it. The side is sorted with
-    //             empties last, so this looks like 0...01...1.
-    // Each level's new value then depends only on itself and its neighbors:
-    //   size change: the matching level grows or shrinks in place.
-    //   remove:      the matching level and every level below it take the
-    //                value from one place below (shift up).
-    //   insert:      the first worse level takes the new level; every worse
-    //                level after it takes the value from one place above
-    //                (shift down).
+    // All levels are compared with the update at once:
+    //   match[i]: level i is at the update's price.
+    //   worse[i]: level i is empty or worse, so the new price belongs above it.
+    //             The side is sorted with empties last, so this is 0...01...1.
+    // Each level then takes its new value from itself or a neighbour: a resize
+    // changes the matching level, a remove shifts worse levels up, and an insert
+    // puts the new level at the first worse slot and shifts the rest down.
     function automatic update_result_t apply_update(side_t levels, level_update_t update);
         update_result_t    result;
         logic [LEVELS-1:0] match;        // level i is at update.price
@@ -90,10 +85,10 @@ module book
         logic [LEVELS-1:0] worse_above;  // level i-1 is worse (never, for level 0)
         logic [LEVELS-1:0] empties;      // level i matches and loses all its shares
         side_t             from_below;   // level i+1, for shifting up (the last becomes empty)
-        side_t             from_above;   // level i-1, for shifting down (level 0: unused)
+        side_t             from_above;   // level i-1, for shifting down
         level_t            new_level;    // the level an insert adds
 
-        // Compare every level against the update, in parallel.
+        // Compare every level with the update, in parallel.
         for (int i = 0; i < LEVELS; ++i) begin
             match[i]   = levels[i].valid && levels[i].price == update.price;
             worse[i]   = !levels[i].valid || better(update.is_buy, update.price, levels[i].price);
@@ -101,7 +96,7 @@ module book
         end
         worse_above = {worse[LEVELS-2:0], 1'b0};
 
-        // Each level's neighbors, for shifting.
+        // Each level's neighbours. % LEVELS only keeps the index in range; the ?: discards it.
         for (int i = 0; i < LEVELS; ++i) begin
             from_below[i] = (i < LEVELS - 1) ? levels[(i + 1) % LEVELS] : '0;
             from_above[i] = (i > 0)          ? levels[(i + LEVELS - 1) % LEVELS] : '0;
@@ -111,18 +106,18 @@ module book
         new_level.price = update.price;
         new_level.size  = update.shares;
 
-        // Default: unchanged, no overflow (also the result for an invalid update).
+        // Default: unchanged, no overflow (also for an invalid update).
         result.levels   = levels;
         result.overflow = 1'b0;
 
         if (update.valid) begin
             if (|empties) begin
-                // Remove: the emptied level and everything worse shift up.
+                // Remove: the emptied level and every worse one shift up.
                 for (int i = 0; i < LEVELS; ++i) begin
                     if (match[i] || worse[i]) result.levels[i] = from_below[i];
                 end
             end else if (|match) begin
-                // Size change at an existing level.
+                // Resize the matching level in place.
                 for (int i = 0; i < LEVELS; ++i) begin
                     if (match[i]) begin
                         result.levels[i].size = update.add ? levels[i].size + update.shares
@@ -130,16 +125,14 @@ module book
                     end
                 end
             end else if (update.add) begin
-                // Insert: the first worse level takes the new one, and the
-                // rest shift down. A full side loses its worst level (or, if
-                // the new level is worse than all of them, can't store it).
+                // Insert at the first worse slot; the rest shift down. A full side
+                // loses its worst level (or can't store a new worst one): overflow.
                 for (int i = 0; i < LEVELS; ++i) begin
                     if (worse[i]) result.levels[i] = worse_above[i] ? from_above[i] : new_level;
                 end
                 result.overflow = levels[LEVELS-1].valid;
             end else begin
-                // Shares leaving a level the book isn't tracking: a level
-                // must have been dropped earlier.
+                // Shares leaving a level the book doesn't hold: one was dropped earlier.
                 result.overflow = 1'b1;
             end
         end
