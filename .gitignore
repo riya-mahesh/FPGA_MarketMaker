@@ -1,0 +1,6 @@
+# Downloaded toolchain (make tools) and generated build output
+tools/
+build/
+
+# macOS
+.DS_Store

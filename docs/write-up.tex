@@ -1,0 +1,159 @@
+% Assignment 2 write-up template.
+%
+% Fill in your name and NetID, then replace each placeholder paragraph.
+% Please don't change the font size, margins, or structure.
+% The collaboration and AI use statement goes on its own page and does not count toward the limit.
+% The write-up itself (everything after the page break) must fit on one page.
+
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\studentname}{Your Name}
+\newcommand{\netid}{abc1234}
+
+\newcommand{\prompt}[1]{\par\medskip\noindent\textbf{#1}\par\smallskip\noindent\ignorespaces}
+
+\title{Assignment 2: Write-Up}
+\author{\studentname\ (\netid)}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{center}
+  \textbf{Collaboration and AI use statement}
+\end{center}
+\noindent\fbox{%
+  \begin{minipage}{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
+    % Describe how you collaborated with other students, which AI tools you used, and how you used them.
+    Replace this paragraph with your statement.
+  \end{minipage}%
+}
+
+\clearpage
+
+\prompt{Explain the change you made and how it allows us to increase the clock frequency.}
+% OUTLINE (comments only: these lines don't appear in the PDF). Write your
+% own prose below; delete the outline when you're done.
+%
+% NAMES used below:
+%   Original  = pricing as given (1 stage)
+%   Version 1 = split into 2 pipeline stages
+%   Version 2 = Version 1 + one-hot pick of k
+%   Version 3 = Version 2 + every candidate answer precomputed  (SUBMITTED CODE)
+%
+% ---------------------------------------------------------------------------
+% 1. THE PROBLEM (measured with make timing)
+%    - Whole design 18.10 MHz (55.25 ns period).
+%    - pricing alone 18.88 MHz: slowest module by far (next: quote_manager 42.76).
+%    - Critical path started at pricing's input register.
+%
+% ---------------------------------------------------------------------------
+% 2. ORIGINAL -- what pricing does, all in ONE cycle
+%    Goal: tick below/above the microprice, then -/+ credit, without dividing.
+%    Steps, each waiting for the one before:
+%      a. spread = A - B; total = bid size + ask size
+%      b. S = spread in ticks: compare spread >= 1,2,...,16 ticks
+%         (16 parallel compares, then a "later wins" chain)
+%      c. weighted = S x bid size                      (MULTIPLIER, waits for b)
+%      d. for each k = 1..15: k x total <= weighted ?  (15 multiplies + compares,
+%         PARALLEL, but they wait for c)
+%      e. pick the largest k that passes               ("later wins" if-loop =
+%         15-DEEP PRIORITY CHAIN of muxes: SERIAL)
+%      f. tick below = B + k x tick                    (MULTIPLIER k x 100, ~3.9 ns, + ADD)
+%      g. can_quote: ... tick below > credit           (COMPARE)
+%      h. bid = tick below - credit, ask = tick above + credit (ADD/SUBTRACT)
+%    Why slow: the compares are parallel, but everything else is one long
+%    serial chain (b's chain -> c -> e's chain -> f -> g -> h).
+%
+% ---------------------------------------------------------------------------
+% 3. VERSION 1 -- pipeline into two stages
+%    WHAT CHANGED: a register inserted after c (weighted), the point everything
+%      later depends on. Each half gets its own clock cycle.
+%    STAGE 1: a, b, c. ALSO moved here: k x total for every k (needs only the
+%      sizes, so computed ALONGSIDE b/c, not after them) and the k < S mask.
+%    STAGE 2: compares (d), priority chain (e), f, g, h.
+%    PARALLEL: the k x total multiplies (beside the spread chain); the compares.
+%    STILL SERIAL (stage 2): priority chain -> multiplier -> add -> compare -> subtract.
+%    HARDWARE: + middle registers; logic about the same (2,603 LUTs).
+%    COST: +1 cycle latency.
+%    RESULT: 29.00 MHz. Not enough: stage 2 now the critical path.
+%
+% ---------------------------------------------------------------------------
+% 4. VERSION 2 -- one-hot pick instead of the priority chain
+%    WHAT CHANGED: step e only.
+%    KEY FACT: k x total grows with k, and k < S is a prefix, so the passing
+%      k's form a prefix: fits = 1..1 0..0. Largest k = the 1 followed by a 0:
+%        chosen[k] = fits[k] && !fits[k+1]
+%      Each k checks only itself and its neighbour: one gate each, ALL PARALLEL.
+%    ALSO: credit captured in stage 1 and carried with the item (mid_credit),
+%      so each item uses the credit current when it entered, as the original did.
+%    STILL SERIAL (stage 2): k x tick multiplier -> add -> compare -> subtract.
+%    HARDWARE: almost unchanged (2,798 LUTs).
+%    RESULT: 30.25 MHz (single run, within noise of 30): removing the chain
+%      alone barely helped -- the multiplier and adders AFTER the pick were the
+%      real problem.
+%
+% ---------------------------------------------------------------------------
+% 5. VERSION 3 (SUBMITTED) -- precompute every candidate answer in stage 1
+%    WHAT CHANGED: steps f, g, h moved to stage 1, done for EVERY possible k.
+%    KEY FACT: k is only 0..15, and these don't depend on weighted, so stage 1
+%      computes them ALONGSIDE b/c, in PARALLEL:
+%        bid[k]      = B + k*tick - credit       (k = 0..15)
+%        ask[k]      = B + k*tick + credit       (k = 0..16: tick above can be k+1)
+%        positive[k] = B + k*tick > credit
+%      k*tick is a CONSTANT per k -> no multiplier, just adders.
+%    STAGE 2: parallel compares -> one-hot (1 gate) -> AND-OR select of the
+%      chosen bid/ask/positive -> can_quote. No chain, no multiplier, no adders.
+%    HARDWARE: pricing 2,714 -> 9,226 LUTs (stores 33 candidate prices);
+%      whole design 22% -> 25% of the chip.
+%    RESULT: 41.52 MHz (24.08 ns). Critical path moved OUT of pricing
+%      (now quote_manager); pricing ~40 MHz, balanced with book (44) and
+%      quote_manager (43).
+%
+% ---------------------------------------------------------------------------
+% 6. TRADE-OFFS AND CHECKS
+%    - Latency 9 -> 10 cycles, but 9 x 55.25 ns ~ 497 ns -> 10 x 24.08 ns ~ 241 ns.
+%    - More area for less depth: compute all candidates, pick one.
+%    - Correctness: make verify 10/10; random equivalence test vs original
+%      (millions of inputs, 0 mismatches).
+%
+% SUGGESTED TABLE (saves space):
+%   Version | change                  | whole design | pricing LUTs
+%   Orig.   | 1 stage                 | 18.10 MHz    | 2,714
+%   1       | 2 stages                | 29.00 MHz    | 2,603
+%   2       | + one-hot pick          | 30.25 MHz    | 2,798
+%   3       | + precomputed answers   | 41.52 MHz    | 9,226
+Replace this paragraph with your answer.
+
+\prompt{Explain how your implementation of the order book differs from the C++ implementation of the order book. How does the implementation of each order book play to the strengths of the respective platform?}
+% OUTLINE (comments only). Write your own prose below.
+%
+% FPGA book (rtl/book.sv):
+%  - Price LEVELS only (total shares per price), not individual orders
+%    (the order table handles orders). Top 16 levels per side, in registers.
+%  - Each update compares against all 16 levels at once (match / worse masks);
+%    each level's new value depends only on itself and its neighbours ->
+%    insert/remove/resize in ONE cycle, fixed latency regardless of position.
+%  - Top of book is free: level 0.
+%  - Cost: lots of logic (book ~11,700 LUTs, the biggest module) and limited
+%    depth -> book_overflow when a 17th level is needed.
+%
+% C++ book (the one you're comparing against -- check which: sim/exchange/
+% order_book.h, or your Assignment 1 book):
+%  - e.g. std::map<Price, list<Order>> per side + unordered_map ref -> order.
+%  - Unlimited depth, keeps individual orders in time priority.
+%  - O(log n) insert/lookup, pointer chasing, dynamic allocation.
+%
+% Strengths of each platform:
+%  - FPGA: massive parallelism, deterministic timing, no memory allocation;
+%    fixed-size structures map well to registers/comparators.
+%  - CPU: sequential, flexible, large cheap memory, caches; dynamic data
+%    structures are natural; variable latency is acceptable.
+Replace this paragraph with your answer.
+
+\end{document}

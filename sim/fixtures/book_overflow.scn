@@ -1,0 +1,45 @@
+# More than 16 price levels on one side of the book.
+#
+# The FPGA's book keeps only the best 16 levels per side. A new level that
+# would push the worst one out (or one worse than all 16) means the book can
+# no longer be trusted: once the better levels empty, the dropped level
+# should become visible, and the FPGA no longer knows it. So the FPGA halts:
+# it cancels both quotes and stops quoting, even though the market keeps
+# moving.
+#
+# Participants: 2 and 3 provide the book, 4 adds bid depth.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 20_000_000
+
+0            2 enter 1 B 500 100.00
+0            3 enter 1 S 500 100.01
+0            3 enter 2 S 400 100.02
+
+# Bid depth every other tick, 99.98 down to 99.70: with 100.00, exactly 16
+# levels. The book is full but still correct, and the top doesn't change:
+# no orders.
+2_000_000    4 enter 1 B 100 99.98
+2_001_000    4 enter 2 B 100 99.96
+2_002_000    4 enter 3 B 100 99.94
+2_003_000    4 enter 4 B 100 99.92
+2_004_000    4 enter 5 B 100 99.90
+2_005_000    4 enter 6 B 100 99.88
+2_006_000    4 enter 7 B 100 99.86
+2_007_000    4 enter 8 B 100 99.84
+2_008_000    4 enter 9 B 100 99.82
+2_009_000    4 enter 10 B 100 99.80
+2_010_000    4 enter 11 B 100 99.78
+2_011_000    4 enter 12 B 100 99.76
+2_012_000    4 enter 13 B 100 99.74
+2_013_000    4 enter 14 B 100 99.72
+2_014_000    4 enter 15 B 100 99.70
+
+# A 17th level, in the middle at 99.99, pushes 99.70 out of the book.
+8_000_000    4 enter 16 B 100 99.99
+
+# The market moves; the app no longer reacts.
+10_000_000   3 cancel 1
+12_000_000   2 enter 2 B 300 100.01
